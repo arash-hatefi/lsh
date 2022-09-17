@@ -35,7 +35,7 @@
 
 #define STDIN_ERROR_MESSAGE "STDIN_ERROR_MESSAGE"
 #define STDOUT_ERROR_MESSAGE "STDOUT_ERROR_MESSAGE"
-#define UNKNOWN_COMMAND_ERROR_MESSAGE "UNKNOWN_COMMAND_ERROR_MESSAGE"
+#define UNKNOWN_COMMAND_ERROR_MESSAGE "%s: Command not found"
 
 #define CD_COMMAND "cd"
 #define EXIT_COMMAND "exit"
@@ -52,11 +52,12 @@
 
 const char PATH_SEPERATOR = ':';
 
+pid_t MAIN_PROCESS_PID;
 
 
 void RunCommand(int, Command *);
 void RunCommandRecursively(Pgm *, int , int );
-void RunCommandInForground(Pgm *, int , int );
+void RunCommandInForeground(Pgm *, int , int );
 void RunCommandInBackground(Pgm *, int , int );
 void RunSingleCommand(char **, int , int );
 void DebugPrintCommand(int, Command *);
@@ -65,19 +66,27 @@ void stripwhite(char *);
 bool IsEqual(char *, char *);
 void RunCdCommand(char **);
 void RunExitCommand();
-bool FileExists(char* );
+bool FileExists(char *);
 bool FileExistsInDir(char *, char *);
 void GetExternalLinuxCommandFullPath(char *, char *);
 void AddPaths(char *, char *, char *);
 void SigchldHandler(int );
+void SigintHandlerWhileRunningForgraoundProcess(int );
+void SigintHandlerWhileNotRunningForgraoundProcess(int );
+
 
 
 int main(int argc, char *argv[])
 {
+
+  setpgid(0,0);
+  MAIN_PROCESS_PID = getpid();
+
   bool debug = FALSE;
   if (argc==2 && IsEqual(argv[1], DEBUG_COMMAND_LINE_ARG)) {debug = TRUE;}
 
   signal(SIGCHLD, SigchldHandler);
+  signal(SIGINT, SigintHandlerWhileNotRunningForgraoundProcess);
 
   Command cmd;
   int parse_result;
@@ -101,7 +110,9 @@ int main(int argc, char *argv[])
       // add_history(line);   ?????????????????????????
       parse_result = parse(line, &cmd);
       if(debug) {DebugPrintCommand(parse_result, &cmd);}
+      signal(SIGINT, SigintHandlerWhileRunningForgraoundProcess);
       RunCommand(parse_result, &cmd);
+      signal(SIGINT, SigintHandlerWhileNotRunningForgraoundProcess);
     }
 
     /* Clear memory */
@@ -133,14 +144,23 @@ void RunCommand(int parse_result, Command *cmd)
     fprintf(stderr, STDOUT_ERROR_MESSAGE);
     return;
   }
-  (cmd->background) ? RunCommandInBackground(cmd->pgm, inFileDescriptor, outFileDescriptor) : RunCommandInForground(cmd->pgm, inFileDescriptor, outFileDescriptor);
+  (cmd->background) ? RunCommandInBackground(cmd->pgm, inFileDescriptor, outFileDescriptor) : RunCommandInForeground(cmd->pgm, inFileDescriptor, outFileDescriptor);
 
   if (inFileDescriptor!=STDIN_FILENO) {close(inFileDescriptor);}
   if (outFileDescriptor!=STDOUT_FILENO) {close(outFileDescriptor);}
 }
 
 
-void RunCommandInForground(Pgm* pgm, int inFileDescriptor, int outFileDescriptor) {RunCommandRecursively(pgm, inFileDescriptor, outFileDescriptor);}
+void RunCommandInForeground(Pgm* pgm, int inFileDescriptor, int outFileDescriptor)
+{
+  pid_t id = fork();
+  if (id==0) 
+  {
+    RunCommandRecursively(pgm, inFileDescriptor, outFileDescriptor);
+    exit(0);
+  }
+  else(waitpid(id, NULL, 0));
+}
 
 
 void RunCommandInBackground(Pgm* pgm, int inFileDescriptor, int outFileDescriptor)
@@ -148,6 +168,7 @@ void RunCommandInBackground(Pgm* pgm, int inFileDescriptor, int outFileDescripto
   pid_t id = fork();
   if (id==0) 
   {
+    setpgid(0,0);
     RunCommandRecursively(pgm, inFileDescriptor, outFileDescriptor);
     exit(0);
   }
@@ -205,7 +226,7 @@ void RunSingleCommand(char **pgmlist, int inFileDescriptor, int outFileDescripto
       }
       else {waitpid(id, NULL, 0);}
     }
-    else {printf("%s\n", UNKNOWN_COMMAND_ERROR_MESSAGE);}
+    else {printf(UNKNOWN_COMMAND_ERROR_MESSAGE, cmd);}
   }
   return;
 }
@@ -374,19 +395,15 @@ void AddPaths(char* dir, char* filename, char* result)
 void SigchldHandler(int signum) {waitpid(-1, NULL, WNOHANG);}
 
 
+void SigintHandlerWhileRunningForgraoundProcess(int signum)
+{
+  if (getpgid(0)==MAIN_PROCESS_PID && getpid()!=MAIN_PROCESS_PID) {exit(0);}
+  if (getpid()==MAIN_PROCESS_PID) {printf("\n");}
+}
 
-// int main()
-// {
-//   int id = fork();
+void SigintHandlerWhileNotRunningForgraoundProcess(int signum)
+{
+  SigintHandlerWhileRunningForgraoundProcess(signum);
+  printf("> ");
+}
 
-//   if (id==0)
-//   {
-//     setpgid(0,0);
-//   }
-//   else
-//   {
-
-//   }
-
-//   return 0;
-// }
