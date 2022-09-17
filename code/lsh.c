@@ -94,7 +94,6 @@ int main(int argc, char *argv[])
 
   while (TRUE)
   {
-    // fflush(stdin);
     char *line;
     line = readline("> ");
 
@@ -108,7 +107,7 @@ int main(int argc, char *argv[])
     /* If stripped line not blank */
     if (*line)
     {
-      // add_history(line);   ?????????????????????????
+      add_history(line);
       parse_result = parse(line, &cmd);
       if(debug) {DebugPrintCommand(parse_result, &cmd);}
       signal(SIGINT, SigintHandlerWhileRunningForgraoundProcess);
