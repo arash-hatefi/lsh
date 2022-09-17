@@ -1,0 +1,3 @@
+Through the respective output, you can see that students’ names are arranged alphabetically in a sequence from a to z.
+
+Beside this. Suppose we want to get an output in sorted form plus removing redundancy. We will use the same command and a “uniq” keyword in addition to the default command. Let’s consider a file named file2.txt having the names of subjects in it. The same command is used for fetching data.

@@ -33,9 +33,10 @@
 #define TRUE 1
 #define FALSE 0
 
-#define STDIN_ERROR_MESSAGE "STDIN_ERROR_MESSAGE"
-#define STDOUT_ERROR_MESSAGE "STDOUT_ERROR_MESSAGE"
-#define UNKNOWN_COMMAND_ERROR_MESSAGE "%s: Command not found"
+#define STDIN_ERROR_MESSAGE "%s: Cannot open file\n"
+#define STDOUT_ERROR_MESSAGE "%s: Cannot open file\n"
+#define UNKNOWN_COMMAND_ERROR_MESSAGE "%s: Command not found\n"
+#define CD_ERROR_MESSAGE "%s: No such file or directory\n"
 
 #define CD_COMMAND "cd"
 #define EXIT_COMMAND "exit"
@@ -132,16 +133,16 @@ int main(int argc, char *argv[])
  */
 void RunCommand(int parse_result, Command *cmd)
 {  
-  int inFileDescriptor = (cmd->rstdin) ? open(cmd->rstdin, O_RDONLY | O_CREAT) : STDIN_FILENO;
+  int inFileDescriptor = (cmd->rstdin) ? open(cmd->rstdin, O_RDONLY) : STDIN_FILENO;
   if (inFileDescriptor<0)
   {
-    fprintf(stderr, STDIN_ERROR_MESSAGE);
+    fprintf(stderr, STDIN_ERROR_MESSAGE, cmd->rstdin);
     return;
   }
   int outFileDescriptor = (cmd->rstdout) ? open(cmd->rstdout, O_CREAT | O_APPEND | O_WRONLY, S_IRWXU) : STDOUT_FILENO;
   if (outFileDescriptor<0)
   {
-    fprintf(stderr, STDOUT_ERROR_MESSAGE);
+    fprintf(stderr, STDOUT_ERROR_MESSAGE, cmd->rstdout);
     return;
   }
   (cmd->background) ? RunCommandInBackground(cmd->pgm, inFileDescriptor, outFileDescriptor) : RunCommandInForeground(cmd->pgm, inFileDescriptor, outFileDescriptor);
@@ -216,19 +217,13 @@ void RunSingleCommand(char **pgmlist, int inFileDescriptor, int outFileDescripto
     char externalLinuxCommandFullPath[strlen(PATH_DIRS)+strlen(cmd)+2];
     GetExternalLinuxCommandFullPath(cmd, externalLinuxCommandFullPath);
     if (*externalLinuxCommandFullPath)
-    {
-      pid_t id = fork();
-      if (id==0)
-      {  
-        if (outFileDescriptor!=STDOUT_FILENO) {dup2(outFileDescriptor, STDOUT_FILENO);} 
-        if (inFileDescriptor!=STDIN_FILENO) {dup2(inFileDescriptor, STDIN_FILENO);}
-        if(execvp(externalLinuxCommandFullPath, pgmlist) == -1) {return;}
-      }
-      else {waitpid(id, NULL, 0);}
+    { 
+      if (outFileDescriptor!=STDOUT_FILENO) {dup2(outFileDescriptor, STDOUT_FILENO);} 
+      if (inFileDescriptor!=STDIN_FILENO) {dup2(inFileDescriptor, STDIN_FILENO);}
+      if(execvp(externalLinuxCommandFullPath, pgmlist) == -1) {return;}
     }
-    else {printf(UNKNOWN_COMMAND_ERROR_MESSAGE, cmd);}
+    else {fprintf(stderr, UNKNOWN_COMMAND_ERROR_MESSAGE, cmd);}
   }
-  return;
 }
 
 
@@ -320,16 +315,11 @@ bool IsEqual(char* string1, char* string2)
 void RunCdCommand(char** args)
 {
   char* newDir = (*args==NULL) ? getenv(HOME_KEYWORD) : *args; 
-  if(chdir(newDir)==-1) { printf("failed to change dir to %s\n", newDir);}  
-  return;
+  if(chdir(newDir)==-1) { fprintf(stderr, CD_ERROR_MESSAGE, newDir);}  
 }
 
 
-void RunExitCommand()
-{
-  exit(0);
-  return;
-}
+void RunExitCommand() {exit(0);}
 
     
 bool FileExists(char* filename)
@@ -379,7 +369,6 @@ void GetExternalLinuxCommandFullPath(char* cmd, char* externalLinuxCommandFullPa
   }
 
   *externalLinuxCommandFullPath = 0;
-  return;
 }
 
 
@@ -388,7 +377,6 @@ void AddPaths(char* dir, char* filename, char* result)
     strcpy(result, dir);
     strcat(result, "/");
     strcat(result, filename);
-    return;
 }
 
 
