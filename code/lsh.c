@@ -53,14 +53,13 @@
 
 const char PATH_SEPERATOR = ':';
 
-pid_t MAIN_PROCESS_PID;
-
 
 void RunCommand(int, Command *);
 void RunCommandRecursively(Pgm *, int , int );
 void RunCommandInForeground(Pgm *, int , int );
 void RunCommandInBackground(Pgm *, int , int );
 void RunSingleCommand(char **, int , int );
+bool HandleBuiltins(char **, int , int );
 void DebugPrintCommand(int, Command *);
 void PrintPgm(Pgm *);
 void stripwhite(char *);
@@ -72,8 +71,7 @@ bool FileExistsInDir(char *, char *);
 void GetExternalLinuxCommandFullPath(char *, char *);
 void AddPaths(char *, char *, char *);
 void SigchldHandler(int );
-void SigintHandlerWhileRunningForgraoundProcess(int );
-void SigintHandlerWhileNotRunningForgraoundProcess(int );
+void MainProcessSigintHandler(int );
 
 
 
@@ -81,13 +79,12 @@ int main(int argc, char *argv[])
 {
 
   setpgid(0,0);
-  MAIN_PROCESS_PID = getpid();
+
+  signal(SIGCHLD, SigchldHandler);
+  signal(SIGINT, MainProcessSigintHandler);
 
   bool debug = FALSE;
   if (argc==2 && IsEqual(argv[1], DEBUG_COMMAND_LINE_ARG)) {debug = TRUE;}
-
-  signal(SIGCHLD, SigchldHandler);
-  signal(SIGINT, SigintHandlerWhileNotRunningForgraoundProcess);
 
   Command cmd;
   int parse_result;
@@ -110,9 +107,7 @@ int main(int argc, char *argv[])
       add_history(line);
       parse_result = parse(line, &cmd);
       if(debug) {DebugPrintCommand(parse_result, &cmd);}
-      signal(SIGINT, SigintHandlerWhileRunningForgraoundProcess);
       RunCommand(parse_result, &cmd);
-      signal(SIGINT, SigintHandlerWhileNotRunningForgraoundProcess);
     }
 
     /* Clear memory */
@@ -123,7 +118,6 @@ int main(int argc, char *argv[])
 
 
 /* Execute the given command(s).
-
  * Note: The function currently only prints the command(s).
  * 
  * TODO: 
@@ -144,7 +138,8 @@ void RunCommand(int parse_result, Command *cmd)
     fprintf(stderr, STDOUT_ERROR_MESSAGE, cmd->rstdout);
     return;
   }
-  (cmd->background) ? RunCommandInBackground(cmd->pgm, inFileDescriptor, outFileDescriptor) : RunCommandInForeground(cmd->pgm, inFileDescriptor, outFileDescriptor);
+
+  (cmd->background) ? RunCommandInBackground(cmd->pgm, inFileDescriptor, outFileDescriptor) : RunCommandInForeground(cmd->pgm, inFileDescriptor, outFileDescriptor);  
 
   if (inFileDescriptor!=STDIN_FILENO) {close(inFileDescriptor);}
   if (outFileDescriptor!=STDOUT_FILENO) {close(outFileDescriptor);}
@@ -153,13 +148,27 @@ void RunCommand(int parse_result, Command *cmd)
 
 void RunCommandInForeground(Pgm* pgm, int inFileDescriptor, int outFileDescriptor)
 {
+  if (pgm->next==NULL && HandleBuiltins(pgm->pgmlist, inFileDescriptor, outFileDescriptor)) {return;}
+  
   pid_t id = fork();
   if (id==0) 
   {
+    setpgid(0,0);
     RunCommandRecursively(pgm, inFileDescriptor, outFileDescriptor);
     exit(0);
   }
-  else(waitpid(id, NULL, 0));
+  else
+  {
+    void ForegraundSigintHandler(int signum) 
+    {
+      kill(-id, SIGKILL);
+      signal(SIGINT, MainProcessSigintHandler);
+      printf("\n");
+    }
+    signal(SIGINT, ForegraundSigintHandler);
+    waitpid(id, NULL, 0);
+    signal(SIGINT, MainProcessSigintHandler);
+  }
 }
 
 
@@ -207,24 +216,37 @@ void RunCommandRecursively(Pgm* pgm, int inFileDescriptor, int outFileDescriptor
 
 void RunSingleCommand(char **pgmlist, int inFileDescriptor, int outFileDescriptor)
 {
+  if(HandleBuiltins(pgmlist, inFileDescriptor, outFileDescriptor)) {return;}
   char* cmd = *pgmlist;
   char** args = pgmlist+1;
-  if(IsEqual(cmd, CD_COMMAND)) {RunCdCommand(args);}
-  else if(IsEqual(cmd, EXIT_COMMAND)) {RunExitCommand();}
-  else
-  {
-    char externalLinuxCommandFullPath[strlen(PATH_DIRS)+strlen(cmd)+2];
-    GetExternalLinuxCommandFullPath(cmd, externalLinuxCommandFullPath);
-    if (*externalLinuxCommandFullPath)
-    { 
-      if (outFileDescriptor!=STDOUT_FILENO) {dup2(outFileDescriptor, STDOUT_FILENO);} 
-      if (inFileDescriptor!=STDIN_FILENO) {dup2(inFileDescriptor, STDIN_FILENO);}
-      if(execvp(externalLinuxCommandFullPath, pgmlist) == -1) {return;}
-    }
-    else {fprintf(stderr, UNKNOWN_COMMAND_ERROR_MESSAGE, cmd);}
+  char externalLinuxCommandFullPath[strlen(PATH_DIRS)+strlen(cmd)+2];
+  GetExternalLinuxCommandFullPath(cmd, externalLinuxCommandFullPath);
+  if (*externalLinuxCommandFullPath)
+  { 
+    if (outFileDescriptor!=STDOUT_FILENO) {dup2(outFileDescriptor, STDOUT_FILENO);} 
+    if (inFileDescriptor!=STDIN_FILENO) {dup2(inFileDescriptor, STDIN_FILENO);}
+    if(execvp(externalLinuxCommandFullPath, pgmlist) == -1) {return;}
   }
+  else {fprintf(stderr, UNKNOWN_COMMAND_ERROR_MESSAGE, cmd);}
 }
 
+
+bool HandleBuiltins(char **pgmlist, int inFileDescriptor, int outFileDescriptor)
+{
+  char* cmd = *pgmlist;
+  char** args = pgmlist+1;
+  if(IsEqual(cmd, CD_COMMAND))
+  {
+    RunCdCommand(args);
+    return TRUE;
+  }
+  else if(IsEqual(cmd, EXIT_COMMAND))
+  {
+    RunExitCommand();
+    return TRUE;
+  }
+  return FALSE;
+}
 
 /* 
  * Print a Command structure as returned by parse on stdout. 
@@ -382,15 +404,4 @@ void AddPaths(char* dir, char* filename, char* result)
 void SigchldHandler(int signum) {waitpid(-1, NULL, WNOHANG);}
 
 
-void SigintHandlerWhileRunningForgraoundProcess(int signum)
-{
-  if (getpgid(0)==MAIN_PROCESS_PID && getpid()!=MAIN_PROCESS_PID) {exit(0);}
-  if (getpid()==MAIN_PROCESS_PID) {printf("\n");}
-}
-
-void SigintHandlerWhileNotRunningForgraoundProcess(int signum)
-{
-  SigintHandlerWhileRunningForgraoundProcess(signum);
-  printf("> ");
-}
-
+void MainProcessSigintHandler(int signum) {printf("\n> ");}
