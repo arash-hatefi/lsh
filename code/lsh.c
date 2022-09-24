@@ -1,21 +1,3 @@
-/* 
- * Main source code file for lsh shell program
- *
- * You are free to add functions to this file.
- * If you want to add functions in a separate file 
- * you will need to modify Makefile to compile
- * your additional functions.
- *
- * Add appropriate comments in your code to make it
- * easier for us while grading your assignment.
- *
- * Submit the entire lab1 folder as a tar archive (.tgz).
- * Command to create submission archive: 
-      $> tar cvf lab1.tgz lab1/
- *
- * All the best 
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,21 +12,23 @@
 #include "parse.h"
 
 
-#define TRUE 1
-#define FALSE 0
 
 enum RETURN_CODES
 {
+  SUCCESS_EXIT_CODE = 0,
   EXECUTION_ERROR_EXIT_CODE,
-  SUCCESS_EXIT_CODE,
   FORK_ERROR_EXIT_CODE,
   PIPE_CREATION_ERROR_EXIT_CODE,
   UNKNOWN_COMMAND_EXIT_CODE,
   TERMINATION_SIGNAL_EXIT_CODE,
   STDIN_ERROR_CODE,
   STDOUT_ERROR_CODE,
-  SIGINT_EXIT_CODE 
+  SIGINT_EXIT_CODE,
+  MEMORY_ALLOCATION_ERROR_CODE
 };
+
+#define TRUE 1
+#define FALSE 0
 
 #define STDIN_ERROR_MESSAGE "%s: Cannot open file\n"
 #define STDOUT_ERROR_MESSAGE "%s: Cannot open file\n"
@@ -69,28 +53,49 @@ enum RETURN_CODES
 const char PATH_SEPERATOR = ':';
 
 
+
+typedef struct PgidList
+{
+  pid_t pgid;
+  struct PgidList* next;  
+
+} PgidList;
+
+PgidList* backgroundPgidList = NULL;
+pid_t foregroundPgid = 0;
+
+
+
 int RunCommand(Command *);//
 int RunCommandInForeground(Pgm *, int , int );//
 int RunCommandInBackground(Pgm *, int , int );//
 int RunCommandRecursively(Pgm *, int , int );//
 int RunSingleCommand(char **, int , int );//
-int HandleBuiltins(char **, int , int );
-int RunCdCommand(char **);
+int HandleBuiltins(char **, int , int );//
+int RunCdCommand(char **);//
+void RunExitCommad();//
+void EndAllProcess();//
+void KillProcessInBackgroundPgidList();//
+
+void SigchldHandler(int );//
+void SigintHandler(int );//
+void SigtermHandler(int );//
 
 void DebugPrintCommand(int, Command *);
 void PrintPgm(Pgm *);
+
 void stripwhite(char *); //
 bool IsEqual(char *, char *);//
 bool FileExists(char *);//
 bool FileExistsInDir(char *, char *);//
 void GetExternalCommandFullPath(char *, char *);//
 void AddPaths(char *, char *, char *);//
-void SigchldHandler(int );//
-void MainProcessSigintHandlerWhileWaitingForCommand(int );//
-void MainProcessSigintHandlerWhileExecutingForegroundCommand(int );//
-void ForegroundProcessSigintHandler(int );//
-void BackgroundProcessSigintHandler(int );//
-void SigtermHandler(int );//
+
+int AddBackgroundPgid(pid_t pgid);
+int RemoveBackgroundPgid(pid_t pgid);
+void ResetBackgroundPgidList();
+
+
 
 
 
@@ -98,8 +103,9 @@ int main(int argc, char *argv[])
 {
 
   signal(SIGCHLD, SigchldHandler);
-  signal(SIGINT, MainProcessSigintHandlerWhileWaitingForCommand);
+  signal(SIGINT, SigintHandler);
   signal(SIGTERM, SigtermHandler);
+  signal(SIGTTOU, SIG_IGN);
 
 
   bool debug = FALSE;
@@ -133,18 +139,11 @@ int main(int argc, char *argv[])
     free(line);
   }
 
-  kill(0, SIGTERM);
+  EndAllProcess();
   return 0;
 }
 
 
-/* Execute the given command(s).
- * Note: The function currently only prints the command(s).
- * 
- * TODO: 
- * 1. Implement this function so that it executes the given command(s).
- * 2. Remove the debug printing before the final submission.
- */
 int RunCommand(Command *cmd)
 {  
   int inFileDescriptor = (cmd->rstdin) ? open(cmd->rstdin, O_RDONLY) : STDIN_FILENO;
@@ -187,16 +186,19 @@ int RunCommandInForeground(Pgm* pgm, int inFileDescriptor, int outFileDescriptor
   }
   else if (id==0) 
   {
-    signal(SIGINT, ForegroundProcessSigintHandler);
+    setpgid(0, 0);
+    tcsetpgrp(STDIN_FILENO, getpgid(0));
+    ResetBackgroundPgidList();
     int status = RunCommandRecursively(pgm, inFileDescriptor, outFileDescriptor);
     exit(status);
   }
   else
   {
-    signal(SIGINT, MainProcessSigintHandlerWhileExecutingForegroundCommand);
+    foregroundPgid = id;
     int status;
     waitpid(id, &status, 0);
-    signal(SIGINT, MainProcessSigintHandlerWhileWaitingForCommand);
+    tcsetpgrp(STDIN_FILENO, getpgid(0));
+    foregroundPgid = 0;
     return status;
   }
 }
@@ -212,11 +214,16 @@ int RunCommandInBackground(Pgm* pgm, int inFileDescriptor, int outFileDescriptor
   }
   else if (id==0) 
   {
-    signal(SIGINT, BackgroundProcessSigintHandler);
+    setpgid(0, 0);
+    ResetBackgroundPgidList();
     int status = RunCommandRecursively(pgm, inFileDescriptor, outFileDescriptor);
     exit(status);
   }
-  else {return SUCCESS_EXIT_CODE;}
+  else
+  {
+    AddBackgroundPgid(id);
+    return SUCCESS_EXIT_CODE;
+  }
 }
 
 
@@ -249,9 +256,9 @@ int RunCommandRecursively(Pgm* pgm, int inFileDescriptor, int outFileDescriptor)
       close(fd[1]);
       int status;
       waitpid(id, &status, 0);
-      if (status==SUCCESS_EXIT_CODE) {status = RunSingleCommand(pgm->pgmlist, fd[0], outFileDescriptor);}
+      int newStatus = RunSingleCommand(pgm->pgmlist, fd[0], outFileDescriptor);
       close(fd[0]);
-      return status;
+      return (status==SUCCESS_EXIT_CODE) ? newStatus : status;
     }
   }
   else {return RunSingleCommand(pgm->pgmlist, inFileDescriptor, outFileDescriptor);}
@@ -268,7 +275,7 @@ int RunSingleCommand(char **pgmlist, int inFileDescriptor, int outFileDescriptor
   char externalCommandFullPath[strlen(PATH_DIRS)+strlen(cmd)+2];
   GetExternalCommandFullPath(cmd, externalCommandFullPath);
   if (*externalCommandFullPath)
-  { 
+  {
     if (outFileDescriptor!=STDOUT_FILENO) {dup2(outFileDescriptor, STDOUT_FILENO);} 
     if (inFileDescriptor!=STDIN_FILENO) {dup2(inFileDescriptor, STDIN_FILENO);}
     if(execvp(externalCommandFullPath, pgmlist)==-1) {return EXECUTION_ERROR_EXIT_CODE;}
@@ -286,15 +293,71 @@ int HandleBuiltins(char **pgmlist, int inFileDescriptor, int outFileDescriptor)
   char* cmd = *pgmlist;
   char** args = pgmlist+1;
   if(IsEqual(cmd, CD_COMMAND)) {return RunCdCommand(args);}
-  else if(IsEqual(cmd, EXIT_COMMAND)) {exit(SUCCESS_EXIT_CODE);}
+  else if(IsEqual(cmd, EXIT_COMMAND)) {RunExitCommad();}
   return UNKNOWN_COMMAND_EXIT_CODE;
 }
 
-/* 
- * Print a Command structure as returned by parse on stdout. 
- * 
- * Helper function, no need to change. Might be useful to study as inpsiration.
- */
+
+int RunCdCommand(char** args)
+{
+  char* newDir = (*args==NULL) ? getenv(HOME_KEYWORD) : *args; 
+  if(chdir(newDir)==-1) 
+  {
+    fprintf(stderr, CD_ERROR_MESSAGE, newDir);
+    return EXECUTION_ERROR_EXIT_CODE;
+  }
+  return SUCCESS_EXIT_CODE;  
+}
+
+
+void RunExitCommad()
+{
+  EndAllProcess();
+  exit(SUCCESS_EXIT_CODE);
+}
+
+
+void EndAllProcess()
+{
+  KillProcessInBackgroundPgidList();
+  ResetBackgroundPgidList();
+}
+
+
+void KillProcessInBackgroundPgidList()
+{
+  PgidList* elementPointer = backgroundPgidList;
+  while (elementPointer!=NULL)
+  {
+    kill(-elementPointer->pgid, SIGTERM);
+    elementPointer = elementPointer->next;
+  }
+  printf("\n");
+}
+
+
+void SigchldHandler(int signum)
+{
+  int status;
+  int terminatedPgid = waitpid(-1, &status, WNOHANG);
+  RemoveBackgroundPgid(terminatedPgid);
+}
+
+
+void SigintHandler(int signum)
+{
+  printf("\n");
+  if (foregroundPgid==0) {printf("\n> ");}
+  else
+  {
+    kill(-foregroundPgid, SIGTERM);
+    foregroundPgid = 0;
+  }
+}
+
+void SigtermHandler(int signum) {exit(TERMINATION_SIGNAL_EXIT_CODE);}
+
+
 void DebugPrintCommand(int parse_result, Command *cmd)
 {
   if (parse_result != 1) {
@@ -312,10 +375,6 @@ void DebugPrintCommand(int parse_result, Command *cmd)
 }
 
 
-/* Print a (linked) list of Pgm:s.
- * 
- * Helper function, no need to change. Might be useful to study as inpsiration.
- */
 void PrintPgm(Pgm *p)
 {
   if (p == NULL)
@@ -340,10 +399,7 @@ void PrintPgm(Pgm *p)
 }
 
 
-/* Strip whitespace from the start and end of a string. 
- *
- * Helper function, no need to change.
- */
+
 void stripwhite(char *string)
 {
   register int i = 0;
@@ -369,18 +425,6 @@ void stripwhite(char *string)
 
 
 bool IsEqual(char* string1, char* string2) {return (strcmp(string1, string2)==0); }
-
-
-int RunCdCommand(char** args)
-{
-  char* newDir = (*args==NULL) ? getenv(HOME_KEYWORD) : *args; 
-  if(chdir(newDir)==-1) 
-  {
-    fprintf(stderr, CD_ERROR_MESSAGE, newDir);
-    return EXECUTION_ERROR_EXIT_CODE;
-  }
-  return SUCCESS_EXIT_CODE;  
-}
 
 
 bool FileExists(char* filename)
@@ -441,25 +485,69 @@ void AddPaths(char* dir, char* filename, char* result)
 }
 
 
-void SigchldHandler(int signum)
-{
-  int status;
-  waitpid(-1, &status, WNOHANG);
+int AddBackgroundPgid(pid_t pgid)
+{ 
+  PgidList* new = (PgidList*) malloc(sizeof(PgidList));//
+  if (new==NULL) {return MEMORY_ALLOCATION_ERROR_CODE;}
+  new->next = NULL;
+  new->pgid = pgid;
+
+  if (backgroundPgidList==NULL) {backgroundPgidList = new;}
+  else
+  {
+    PgidList* elementPointer = backgroundPgidList;
+    while (elementPointer->next!=NULL) {elementPointer = elementPointer->next;}
+    elementPointer->next = new;
+  }
+
+  return SUCCESS_EXIT_CODE;
 }
 
 
-void MainProcessSigintHandlerWhileWaitingForCommand(int signum) {printf("\n> ");}
+int RemoveBackgroundPgid(pid_t pgid)
+{
+  PgidList* elementPointer = backgroundPgidList;
+
+  if (elementPointer==NULL) {return 0;}
+  if (elementPointer->next==NULL)
+  {
+    if (elementPointer->pgid==pgid)
+    {
+      free(elementPointer);
+      backgroundPgidList = NULL;
+      return pgid;
+    }
+    return 0;
+  }
+  while (elementPointer->next!=NULL)
+  {
+    if (elementPointer->next->pgid==pgid)
+    {
+      PgidList* nextElementPointer = elementPointer->next->next;
+      free(elementPointer->next);
+      elementPointer->next = nextElementPointer;
+      return pgid; 
+    }
+    elementPointer = elementPointer->next;
+  }
+  return 0;
+}
 
 
-void MainProcessSigintHandlerWhileExecutingForegroundCommand(int signum) {printf("\n");}
-
-
-void ForegroundProcessSigintHandler(int signum) {exit(SIGINT_EXIT_CODE);}
-
-
-void BackgroundProcessSigintHandler(int signum) {}
-
-
-void SigtermHandler(int signum) {exit(TERMINATION_SIGNAL_EXIT_CODE);}
+void ResetBackgroundPgidList()
+{
+  if (backgroundPgidList==NULL) {return;}
+  else
+  {
+    PgidList* elementPointer = backgroundPgidList;
+    do
+    {
+      PgidList* nextElementPointer = elementPointer->next;
+      free(elementPointer);
+      elementPointer = nextElementPointer;
+    }
+    while (elementPointer!=NULL);
+  }
+}
 
 
