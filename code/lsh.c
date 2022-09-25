@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/wait.h>
+#include <errno.h>
 #include "parse.h"
 
 
@@ -19,19 +20,17 @@ enum RETURN_CODES
   EXECUTION_ERROR_EXIT_CODE,
   FORK_ERROR_EXIT_CODE,
   PIPE_CREATION_ERROR_EXIT_CODE,
-  UNKNOWN_COMMAND_EXIT_CODE,
-  TERMINATION_SIGNAL_EXIT_CODE,
-  STDIN_ERROR_CODE,
-  STDOUT_ERROR_CODE,
-  SIGINT_EXIT_CODE,
-  MEMORY_ALLOCATION_ERROR_CODE
+  UNKNOWN_COMMAND_EXIT_CODE = -1,
+  SIGTERM_EXIT_CODE = 9,
+  OEPN_FILE_ERROR_CODE = 1,
+  SIGINT_EXIT_CODE = 2,
+  MEMORY_ALLOCATION_ERROR_CODE = 12
 };
 
 #define TRUE 1
 #define FALSE 0
 
-#define STDIN_ERROR_MESSAGE "%s: Cannot open file\n"
-#define STDOUT_ERROR_MESSAGE "%s: Cannot open file\n"
+#define OPEN_FILE_ERROR_MESSAGE "%s: Cannot open file\n"
 #define UNKNOWN_COMMAND_ERROR_MESSAGE "%s: Command not found\n"
 #define CD_ERROR_MESSAGE "%s: No such file or directory\n"
 #define FORK_ERROR_MESSAGE "Fork failed\n"
@@ -62,39 +61,34 @@ typedef struct PgidList
 } PgidList;
 
 PgidList* backgroundPgidList = NULL;
-pid_t foregroundPgid = 0;
 
 
 
-int RunCommand(Command *);//
-int RunCommandInForeground(Pgm *, int , int );//
-int RunCommandInBackground(Pgm *, int , int );//
-int RunCommandRecursively(Pgm *, int , int );//
-int RunSingleCommand(char **, int , int );//
-int HandleBuiltins(char **, int , int );//
-int RunCdCommand(char **);//
-void RunExitCommad();//
-void EndAllProcess();//
-void KillProcessInBackgroundPgidList();//
-
-void SigchldHandler(int );//
-void SigintHandler(int );//
-void SigtermHandler(int );//
-
+int RunCommand(Command *);
+int OpenIOs(Command *, int *);
+void CloseIOs(const int [3]);
+int ExecuteCommandsRecursively(Pgm* pgm, const int [3], pid_t* , bool );
+int ExecuteSingleCommandInChildProcess(char **, const int [3], pid_t* , bool );
+int ExecuteSingleCommandInProcess(char **, const int [3]);
+int HandleBuiltins(char **, const int [3]);
+int RunCdCommand(char **);
+void RunExitCommand();
+void EndAllProcess();
+void KillProcessInBackgroundPgidList();
+void SigchldHandler(int );
+void SigintHandler(int );
+void SigtermHandler(int );
 void DebugPrintCommand(int, Command *);
 void PrintPgm(Pgm *);
-
-void stripwhite(char *); //
-bool IsEqual(char *, char *);//
-bool FileExists(char *);//
-bool FileExistsInDir(char *, char *);//
-void GetExternalCommandFullPath(char *, char *);//
-void AddPaths(char *, char *, char *);//
-
-int AddBackgroundPgid(pid_t pgid);
-int RemoveBackgroundPgid(pid_t pgid);
+void stripwhite(char *); 
+bool IsEqual(char *, char *);
+bool FileExists(char *);
+bool FileExistsInDir(char *, char *);
+void GetExternalCommandFullPath(char *, char *);
+void AddPaths(char *, char *, char *);
+int AddBackgroundPgid(pid_t );
+int RemoveBackgroundPgid(pid_t );
 void ResetBackgroundPgidList();
-
 
 
 
@@ -113,6 +107,7 @@ int main(int argc, char *argv[])
 
   Command cmd;
   int parse_result;
+  int status;
 
   while (TRUE)
   {
@@ -132,7 +127,11 @@ int main(int argc, char *argv[])
       add_history(line);
       parse_result = parse(line, &cmd);
       if(debug) {DebugPrintCommand(parse_result, &cmd);}
-      if (parse_result != -1) {RunCommand(&cmd);}
+      if (parse_result != -1)
+      {
+        status = RunCommand(&cmd);
+        if (status==SIGINT_EXIT_CODE) {printf("\n");}
+      }
     }
 
     /* Clear memory */
@@ -146,128 +145,160 @@ int main(int argc, char *argv[])
 
 int RunCommand(Command *cmd)
 {  
-  int inFileDescriptor = (cmd->rstdin) ? open(cmd->rstdin, O_RDONLY) : STDIN_FILENO;
-  if (inFileDescriptor<0) 
+  int fileDescriptors[3];
+  int status = OpenIOs(cmd, fileDescriptors);
+  if (status!=SUCCESS_EXIT_CODE) {return status;}
+
+  if (cmd->pgm->next==NULL)
   {
-    fprintf(stderr, STDIN_ERROR_MESSAGE, cmd->rstdin);
-    return STDIN_ERROR_CODE;
-  }
-  
-  int outFileDescriptor = (cmd->rstdout) ? open(cmd->rstdout, O_CREAT | O_WRONLY, S_IRWXU) : STDOUT_FILENO;
-  if (outFileDescriptor<0)
-  {
-    if (inFileDescriptor!=STDIN_FILENO) {close(inFileDescriptor);}
-    fprintf(stderr, STDOUT_ERROR_MESSAGE, cmd->rstdout);
-    return STDOUT_ERROR_CODE;
+    int status = HandleBuiltins(cmd->pgm->pgmlist, fileDescriptors);
+    if (status!=UNKNOWN_COMMAND_EXIT_CODE) {return status;}
   }
 
-  int status = (cmd->background) ? RunCommandInBackground(cmd->pgm, inFileDescriptor, outFileDescriptor) : RunCommandInForeground(cmd->pgm, inFileDescriptor, outFileDescriptor);  
+  pid_t pgid = 0;
+  int nDecendants = ExecuteCommandsRecursively(cmd->pgm, fileDescriptors, &pgid, cmd->background);
+  status = errno;
+  if (cmd->background)
+  {
+    AddBackgroundPgid(pgid);
+    return status;   
+  }
+  else
+  {
+    for (int counter=0; counter<nDecendants; counter++)
+    {
+      int newStatus;
+      waitpid(-pgid, &newStatus, 0);
+      status = (newStatus==SUCCESS_EXIT_CODE) ? status : EXECUTION_ERROR_EXIT_CODE;
+    }
+    tcsetpgrp(STDIN_FILENO, getpgid(0));
+  }
 
-  if (inFileDescriptor!=STDIN_FILENO) {close(inFileDescriptor);}
-  if (outFileDescriptor!=STDOUT_FILENO) {close(outFileDescriptor);}
+  CloseIOs(fileDescriptors);
 
   return status;
 }
 
 
-int RunCommandInForeground(Pgm* pgm, int inFileDescriptor, int outFileDescriptor)
+void CloseIOs(const int fileDescriptors[3])
 {
-  if (pgm->next==NULL)
-  {
-    int status = HandleBuiltins(pgm->pgmlist, inFileDescriptor, outFileDescriptor);
-    if (status!=UNKNOWN_COMMAND_EXIT_CODE) {return status;}
-  }
-
-  pid_t id = fork();
-  if (id<0)
-  {
-    fprintf(stderr, FORK_ERROR_MESSAGE);
-    return FORK_ERROR_EXIT_CODE;
-  }
-  else if (id==0) 
-  {
-    setpgid(0, 0);
-    tcsetpgrp(STDIN_FILENO, getpgid(0));
-    ResetBackgroundPgidList();
-    int status = RunCommandRecursively(pgm, inFileDescriptor, outFileDescriptor);
-    exit(status);
-  }
-  else
-  {
-    foregroundPgid = id;
-    int status;
-    waitpid(id, &status, 0);
-    tcsetpgrp(STDIN_FILENO, getpgid(0));
-    foregroundPgid = 0;
-    return status;
-  }
+  if (fileDescriptors[0]!=STDIN_FILENO) {close(fileDescriptors[0]);}
+  if (fileDescriptors[1]!=STDOUT_FILENO) {close(fileDescriptors[1]);}
+  if (fileDescriptors[2]!=STDERR_FILENO) {close(fileDescriptors[2]);}
 }
 
 
-int RunCommandInBackground(Pgm* pgm, int inFileDescriptor, int outFileDescriptor)
+int OpenIOs(Command* cmd, int* fileDescriptors)
 {
-  pid_t id = fork();
-  if (id<0)
+  fileDescriptors[0] = (cmd->rstdin) ? open(cmd->rstdin, O_RDONLY) : STDIN_FILENO;
+  if (fileDescriptors[0]<0) 
   {
-    fprintf(stderr, FORK_ERROR_MESSAGE);
-    return FORK_ERROR_EXIT_CODE;
+    fprintf(stderr, OPEN_FILE_ERROR_MESSAGE, cmd->rstdin);
+    return OEPN_FILE_ERROR_CODE;
   }
-  else if (id==0) 
+  
+  fileDescriptors[1] = (cmd->rstdout) ? open(cmd->rstdout, O_CREAT | O_WRONLY, S_IRWXU) : STDOUT_FILENO;
+  if (fileDescriptors[1]<0)
   {
-    setpgid(0, 0);
-    ResetBackgroundPgidList();
-    int status = RunCommandRecursively(pgm, inFileDescriptor, outFileDescriptor);
-    exit(status);
+    if (fileDescriptors[0]!=STDIN_FILENO) {close(fileDescriptors[0]);}
+    fprintf(stderr, OPEN_FILE_ERROR_MESSAGE, cmd->rstdout);
+    return OEPN_FILE_ERROR_CODE;
   }
-  else
+
+  fileDescriptors[2] = (cmd->rstderr) ? open(cmd->rstderr, O_CREAT | O_WRONLY, S_IRWXU) : STDERR_FILENO;
+  if (fileDescriptors[2]<0)
   {
-    AddBackgroundPgid(id);
-    return SUCCESS_EXIT_CODE;
+    if (fileDescriptors[0]!=STDIN_FILENO) {close(fileDescriptors[0]);}
+    if (fileDescriptors[1]!=STDOUT_FILENO) {close(fileDescriptors[1]);}
+    fprintf(stderr, OPEN_FILE_ERROR_MESSAGE, cmd->rstderr);
+    return OEPN_FILE_ERROR_CODE;
   }
+  return SUCCESS_EXIT_CODE;
 }
 
 
-int RunCommandRecursively(Pgm* pgm, int inFileDescriptor, int outFileDescriptor)
+int ExecuteCommandsRecursively(Pgm* pgm, const int fileDescriptors[3], pid_t* pgid, bool background)
 {
+  int inFileDescriptor = fileDescriptors[0];
+  int outFileDescriptor = fileDescriptors[1];
+  int errFileDescriptor = fileDescriptors[2];
+
   if (pgm->next!=NULL)
   {
-    int fd[2];
-    if (pipe(fd)==-1)
+    int pipeFileDescriptors[2];
+    if (pipe(pipeFileDescriptors)==-1)
     {
       fprintf(stderr, PIPE_CREATION_ERROR_MESSAGE);
-      return PIPE_CREATION_ERROR_EXIT_CODE;
+      errno = PIPE_CREATION_ERROR_EXIT_CODE;
+      return 0;
     }
 
     pid_t id = fork();
     if (id<0)
     {
       fprintf(stderr, FORK_ERROR_MESSAGE);
-      return FORK_ERROR_EXIT_CODE;
+      errno = FORK_ERROR_EXIT_CODE;
+      return 0;
     }
     else if (id==0)
     {
-      close(fd[0]);
-      int status = RunCommandRecursively(pgm->next, inFileDescriptor, fd[1]);
-      close(fd[1]);
+      setpgid(0,*pgid);
+      close(pipeFileDescriptors[1]);
+      int newFileDescriptors[3] = {pipeFileDescriptors[0], outFileDescriptor, errFileDescriptor};
+      int status = ExecuteSingleCommandInProcess(pgm->pgmlist, newFileDescriptors);
+      close(pipeFileDescriptors[0]);
       exit(status);
     }
     else
     {
-      close(fd[1]);
-      int status;
-      waitpid(id, &status, 0);
-      int newStatus = RunSingleCommand(pgm->pgmlist, fd[0], outFileDescriptor);
-      close(fd[0]);
-      return (status==SUCCESS_EXIT_CODE) ? newStatus : status;
+      close(pipeFileDescriptors[0]);
+      if (*pgid==0) {*pgid = id;}
+      int newFileDescriptors[3] = {inFileDescriptor, pipeFileDescriptors[1], errFileDescriptor};
+      int nProcesses = ExecuteCommandsRecursively(pgm->next, newFileDescriptors, pgid, background);
+      close(pipeFileDescriptors[1]);
+      return 1 + nProcesses;
     }
   }
-  else {return RunSingleCommand(pgm->pgmlist, inFileDescriptor, outFileDescriptor);}
+  else
+  {
+    int status = ExecuteSingleCommandInChildProcess(pgm->pgmlist, fileDescriptors, pgid, background);
+    errno = status;
+    return (int)(status==SUCCESS_EXIT_CODE);
+  }
 }
 
 
-int RunSingleCommand(char **pgmlist, int inFileDescriptor, int outFileDescriptor)
+int ExecuteSingleCommandInChildProcess(char **pgmlist, const int fileDescriptors[3], pid_t* pgid, bool background)
 {
-  int status = HandleBuiltins(pgmlist, inFileDescriptor, outFileDescriptor);
+  pid_t id = fork();
+  if (id<0)
+  {
+    fprintf(stderr, FORK_ERROR_MESSAGE);
+    return FORK_ERROR_EXIT_CODE;
+  }
+  else if (id==0)
+  {
+    setpgid(0,*pgid);
+    if (!background) {tcsetpgrp(STDIN_FILENO, getpgid(0));}   
+    int status = ExecuteSingleCommandInProcess(pgmlist, fileDescriptors);
+    exit(status);
+  }
+  else
+  {
+    setpgid(id,*pgid);
+    if (*pgid==0) {*pgid = id;}
+    return SUCCESS_EXIT_CODE;
+  }
+}
+
+
+int ExecuteSingleCommandInProcess(char **pgmlist, const int fileDescriptors[3])
+{
+  int inFileDescriptor = fileDescriptors[0];
+  int outFileDescriptor = fileDescriptors[1];
+  int errFileDescriptor = fileDescriptors[1];
+
+  int status = HandleBuiltins(pgmlist, fileDescriptors);
   if(status!=UNKNOWN_COMMAND_EXIT_CODE) {return status;}
 
   char* cmd = *pgmlist;
@@ -278,6 +309,7 @@ int RunSingleCommand(char **pgmlist, int inFileDescriptor, int outFileDescriptor
   {
     if (outFileDescriptor!=STDOUT_FILENO) {dup2(outFileDescriptor, STDOUT_FILENO);} 
     if (inFileDescriptor!=STDIN_FILENO) {dup2(inFileDescriptor, STDIN_FILENO);}
+    if (errFileDescriptor!=STDERR_FILENO) {dup2(errFileDescriptor, STDERR_FILENO);}
     if(execvp(externalCommandFullPath, pgmlist)==-1) {return EXECUTION_ERROR_EXIT_CODE;}
   }
   else 
@@ -288,12 +320,12 @@ int RunSingleCommand(char **pgmlist, int inFileDescriptor, int outFileDescriptor
 }
 
 
-int HandleBuiltins(char **pgmlist, int inFileDescriptor, int outFileDescriptor)
+int HandleBuiltins(char **pgmlist, const int fileDescriptors[3])
 {
   char* cmd = *pgmlist;
   char** args = pgmlist+1;
   if(IsEqual(cmd, CD_COMMAND)) {return RunCdCommand(args);}
-  else if(IsEqual(cmd, EXIT_COMMAND)) {RunExitCommad();}
+  else if(IsEqual(cmd, EXIT_COMMAND)) {RunExitCommand();}
   return UNKNOWN_COMMAND_EXIT_CODE;
 }
 
@@ -310,7 +342,7 @@ int RunCdCommand(char** args)
 }
 
 
-void RunExitCommad()
+void RunExitCommand()
 {
   EndAllProcess();
   exit(SUCCESS_EXIT_CODE);
@@ -344,18 +376,10 @@ void SigchldHandler(int signum)
 }
 
 
-void SigintHandler(int signum)
-{
-  printf("\n");
-  if (foregroundPgid==0) {printf("\n> ");}
-  else
-  {
-    kill(-foregroundPgid, SIGTERM);
-    foregroundPgid = 0;
-  }
-}
+void SigintHandler(int signum) {printf("\n> ");}
 
-void SigtermHandler(int signum) {exit(TERMINATION_SIGNAL_EXIT_CODE);}
+
+void SigtermHandler(int signum) {exit(SIGTERM_EXIT_CODE);}
 
 
 void DebugPrintCommand(int parse_result, Command *cmd)
@@ -397,7 +421,6 @@ void PrintPgm(Pgm *p)
     printf("]\n");
   }
 }
-
 
 
 void stripwhite(char *string)
@@ -487,7 +510,7 @@ void AddPaths(char* dir, char* filename, char* result)
 
 int AddBackgroundPgid(pid_t pgid)
 { 
-  PgidList* new = (PgidList*) malloc(sizeof(PgidList));//
+  PgidList* new = (PgidList*) malloc(sizeof(PgidList));
   if (new==NULL) {return MEMORY_ALLOCATION_ERROR_CODE;}
   new->next = NULL;
   new->pgid = pgid;
