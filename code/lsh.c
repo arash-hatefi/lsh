@@ -16,15 +16,15 @@
 
 enum RETURN_CODES
 {
-  SUCCESS_EXIT_CODE = 0,  /*Same in linux*/
+  SUCCESS_EXIT_CODE = 0,  /* Same in Linux */
   EXECUTION_ERROR_EXIT_CODE = 3,
   FORK_ERROR_EXIT_CODE = 4,
   PIPE_CREATION_ERROR_EXIT_CODE = 5,
-  UNKNOWN_COMMAND_EXIT_CODE = -1,  /*Same in linux*/
-  SIGTERM_EXIT_CODE = 9,  /*Same in linux*/
-  OEPN_FILE_ERROR_CODE = 1,  /*Same in linux*/
-  SIGINT_EXIT_CODE = 2,  /*Same in linux*/
-  MEMORY_ALLOCATION_ERROR_CODE = 12  /*Same in linux*/
+  UNKNOWN_COMMAND_EXIT_CODE = -1,  /* Same in Linux */
+  SIGTERM_EXIT_CODE = 9,  /* Same in Linux */
+  OEPN_FILE_ERROR_CODE = 1,  /* Same in Linux */
+  SIGINT_EXIT_CODE = 2,  /* Same in Linux */
+  MEMORY_ALLOCATION_ERROR_CODE = 12  /* Same in Linux */
 };
 
 #define TRUE 1
@@ -119,7 +119,7 @@ int main(int argc, char *argv[])
     {
       break;
     }
-    /* Remove leading and trailing whitespace from the line */
+    /* Remove leading and trailing white space from the line */
     stripwhite(line);
     /* If stripped line not blank */
     if (*line)
@@ -155,7 +155,7 @@ int RunCommand(Command *cmd)
     if (status!=UNKNOWN_COMMAND_EXIT_CODE) {return status;}
   }
 
-  pid_t pgid = 0; /* ExecuteCommandsRecursively recuires the initial value of PGID to be 0. After running it the value is changed to the new process group id */
+  pid_t pgid = 0; /* ExecuteCommandsRecursively requires the initial value of PGID to be 0. After running it the value is changed to the new process group id */
   int nDecendants = ExecuteCommandsRecursively(cmd->pgm, fileDescriptors, &pgid, cmd->background);
   status = errno; /* Errors in ExecuteCommandsRecursively are handled with errno*/
   if (cmd->background)
@@ -171,7 +171,7 @@ int RunCommand(Command *cmd)
       waitpid(-pgid, &newStatus, 0);
       status = (newStatus==SUCCESS_EXIT_CODE) ? status : EXECUTION_ERROR_EXIT_CODE;
     }
-    tcsetpgrp(STDIN_FILENO, getpgid(0)); /* While running foreground commads, terminal controls the foreground group processes. After finishing the execution, terminal controls the main process again. */
+    tcsetpgrp(STDIN_FILENO, getpgid(0)); /* While running foreground commands, terminal controls the foreground group processes. After finishing the execution, terminal controls the main process again. */
   }
 
   CloseIOs(fileDescriptors);
@@ -220,7 +220,7 @@ int OpenIOs(Command* cmd, int* fileDescriptors)
 
 int ExecuteCommandsRecursively(Pgm* pgm, const int fileDescriptors[3], pid_t* pgid, bool background)
 {
-  /* The function returns the number of successfully created proceses */
+  /* The function returns the number of successfully created processes */
 
   int inFileDescriptor = fileDescriptors[0];
   int outFileDescriptor = fileDescriptors[1];
@@ -336,7 +336,7 @@ int HandleBuiltins(char **pgmlist, const int fileDescriptors[3])
 int RunCdCommand(char** args)
 {
   char* newDir = (*args==NULL) ? getenv(HOME_KEYWORD) : *args; 
-  if(chdir(newDir)==-1) /* Sucessfully changed directory */ 
+  if(chdir(newDir)==-1) /* Successfully changed directory */ 
   {
     fprintf(stderr, CD_ERROR_MESSAGE, newDir);
     return EXECUTION_ERROR_EXIT_CODE;
@@ -575,5 +575,4 @@ void ResetBackgroundPgidList()
     while (elementPointer!=NULL);
   }
 }
-
 
