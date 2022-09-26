@@ -74,7 +74,7 @@ int HandleBuiltins(char **, const int [3]);
 int RunCdCommand(char **);
 void RunExitCommand();
 void EndAllProcesses();
-void KillProcessInBackgroundPgidList();
+void KillProcessesInBackgroundPgidList();
 void SigchldHandler(int );
 void SigintHandler(int );
 void SigtermHandler(int );
@@ -95,11 +95,11 @@ void ResetBackgroundPgidList();
 
 int main(int argc, char *argv[])
 {
-
+  /* Handlers are only used for the main process as all child processes replace their images after running exec */
   signal(SIGCHLD, SigchldHandler);
   signal(SIGINT, SigintHandler);
   signal(SIGTERM, SigtermHandler);
-  signal(SIGTTOU, SIG_IGN);
+  signal(SIGTTOU, SIG_IGN); /* Needed as tcsetpgrp is used. More on tcsetpgrp man page. */
 
 
   bool debug = FALSE;
@@ -149,15 +149,15 @@ int RunCommand(Command *cmd)
   int status = OpenIOs(cmd, fileDescriptors);
   if (status!=SUCCESS_EXIT_CODE) {return status;}
 
-  if (cmd->pgm->next==NULL)
+  if (cmd->pgm->next==NULL) /* Try to handle builtin commands that are not part of a pipe */
   {
     int status = HandleBuiltins(cmd->pgm->pgmlist, fileDescriptors);
     if (status!=UNKNOWN_COMMAND_EXIT_CODE) {return status;}
   }
 
-  pid_t pgid = 0;
+  pid_t pgid = 0; /* ExecuteCommandsRecursively recuires the initial value of PGID to be 0. After running it the value is changed to the new process group id */
   int nDecendants = ExecuteCommandsRecursively(cmd->pgm, fileDescriptors, &pgid, cmd->background);
-  status = errno;
+  status = errno; /* Errors in ExecuteCommandsRecursively are handled with errno*/
   if (cmd->background)
   {
     AddBackgroundPgid(pgid);
@@ -171,7 +171,7 @@ int RunCommand(Command *cmd)
       waitpid(-pgid, &newStatus, 0);
       status = (newStatus==SUCCESS_EXIT_CODE) ? status : EXECUTION_ERROR_EXIT_CODE;
     }
-    tcsetpgrp(STDIN_FILENO, getpgid(0));
+    tcsetpgrp(STDIN_FILENO, getpgid(0)); /* While running foreground commads, terminal controls the foreground group processes. After finishing the execution, terminal controls the main process again. */
   }
 
   CloseIOs(fileDescriptors);
@@ -182,6 +182,7 @@ int RunCommand(Command *cmd)
 
 void CloseIOs(const int fileDescriptors[3])
 {
+  /* STDIN_FILENO, STDOUT_FILENO, and STDERR_FILENO should not be closed */
   if (fileDescriptors[0]!=STDIN_FILENO) {close(fileDescriptors[0]);}
   if (fileDescriptors[1]!=STDOUT_FILENO) {close(fileDescriptors[1]);}
   if (fileDescriptors[2]!=STDERR_FILENO) {close(fileDescriptors[2]);}
@@ -219,6 +220,8 @@ int OpenIOs(Command* cmd, int* fileDescriptors)
 
 int ExecuteCommandsRecursively(Pgm* pgm, const int fileDescriptors[3], pid_t* pgid, bool background)
 {
+  /* The function returns the number of successfully created proceses */
+
   int inFileDescriptor = fileDescriptors[0];
   int outFileDescriptor = fileDescriptors[1];
   int errFileDescriptor = fileDescriptors[2];
@@ -263,7 +266,7 @@ int ExecuteCommandsRecursively(Pgm* pgm, const int fileDescriptors[3], pid_t* pg
   {
     int status = ExecuteSingleCommandInChildProcess(pgm->pgmlist, fileDescriptors, pgid, background);
     errno = status;
-    return (int)(status==SUCCESS_EXIT_CODE);
+    return (int)(status==SUCCESS_EXIT_CODE); /* process is created only if the exit code is SUCCESS_EXIT_CODE */
   }
 }
 
@@ -278,14 +281,14 @@ int ExecuteSingleCommandInChildProcess(char **pgmlist, const int fileDescriptors
   }
   else if (id==0)
   {
-    setpgid(0,*pgid);
+    setpgid(0,*pgid); /* Change the PGID of child from child */
     if (!background) {tcsetpgrp(STDIN_FILENO, getpgid(0));}   
     int status = ExecuteSingleCommandInProcess(pgmlist, fileDescriptors);
     exit(status);
   }
   else
   {
-    setpgid(id,*pgid);
+    setpgid(id,*pgid); /* Change the PGID of child from the main process. If this is not here, the parent may continue while the PGID of child is still not changed*/
     if (*pgid==0) {*pgid = id;}
     return SUCCESS_EXIT_CODE;
   }
@@ -304,7 +307,7 @@ int ExecuteSingleCommandInProcess(char **pgmlist, const int fileDescriptors[3])
   char* cmd = *pgmlist;
   char** args = pgmlist+1;
   char externalCommandFullPath[strlen(PATH_DIRS)+strlen(cmd)+2];
-  GetExternalCommandFullPath(cmd, externalCommandFullPath);
+  GetExternalCommandFullPath(cmd, externalCommandFullPath); /* sets *externalCommandFullPath to NULL if no command is found */
   if (*externalCommandFullPath)
   {
     if (outFileDescriptor!=STDOUT_FILENO) {dup2(outFileDescriptor, STDOUT_FILENO);} 
@@ -333,7 +336,7 @@ int HandleBuiltins(char **pgmlist, const int fileDescriptors[3])
 int RunCdCommand(char** args)
 {
   char* newDir = (*args==NULL) ? getenv(HOME_KEYWORD) : *args; 
-  if(chdir(newDir)==-1) 
+  if(chdir(newDir)==-1) /* Sucessfully changed directory */ 
   {
     fprintf(stderr, CD_ERROR_MESSAGE, newDir);
     return EXECUTION_ERROR_EXIT_CODE;
@@ -344,19 +347,19 @@ int RunCdCommand(char** args)
 
 void RunExitCommand()
 {
-  EndAllProcesses();
+  EndAllProcesses(); /* Avoid orphan generation */
   exit(SUCCESS_EXIT_CODE);
 }
 
 
 void EndAllProcesses()
 {
-  KillProcessInBackgroundPgidList();
-  ResetBackgroundPgidList();
+  KillProcessesInBackgroundPgidList(); /* Avoid orphan generation */
+  ResetBackgroundPgidList(); /* Free the linked list */
 }
 
 
-void KillProcessInBackgroundPgidList()
+void KillProcessesInBackgroundPgidList()
 {
   PgidList* elementPointer = backgroundPgidList;
   while (elementPointer!=NULL)
