@@ -271,10 +271,10 @@ int ExecuteCommandsRecursively(Pgm *pgm, const int fileDescriptors[3], pid_t *pg
     {
       close(pipeFileDescriptors[0]);
       if (*pgid == 0)
-      {*pgid = id;
+      {
+        *pgid = id;
       }
-      int newFileDescriptors[3] = { inFileDescriptor, pipeFileDescriptors[1], errFileDescriptor
-      };
+      int newFileDescriptors[3] = { inFileDescriptor, pipeFileDescriptors[1], errFileDescriptor };
       int nProcesses = ExecuteCommandsRecursively(pgm->next, newFileDescriptors, pgid, background);
       close(pipeFileDescriptors[1]);
       return 1 + nProcesses;
@@ -310,7 +310,8 @@ int ExecuteSingleCommandInChildProcess(char **pgmlist, const int fileDescriptors
   {
     setpgid(id, *pgid); /*Change the PGID of child from the main process. If this is not here, the parent may continue while the PGID of child is still not changed*/
     if (*pgid == 0)
-    {*pgid = id;
+    {
+      *pgid = id;
     }
     return SUCCESS_EXIT_CODE;
   }
@@ -416,7 +417,7 @@ void SigchldHandler(int signum)
 
 void SigintHandler(int signum)
 {
-  printf("\n > ");
+  printf("\n> ");
 }
 
 void SigtermHandler(int signum)
@@ -455,7 +456,7 @@ void PrintPgm(Pgm *p)
      *it reversed to get right
      */
     PrintPgm(p->next);
-    printf("            *[ ");
+    printf("            * [ ");
     while (*pl)
     {
       printf("%s ", *pl++);
@@ -617,7 +618,9 @@ void ResetBackgroundPgidList()
   else
   {
     PgidList *elementPointer = backgroundPgidList;
-    do {  PgidList *nextElementPointer = elementPointer->next;
+    do 
+    {  
+      PgidList *nextElementPointer = elementPointer->next;
       free(elementPointer);
       elementPointer = nextElementPointer;
     }
