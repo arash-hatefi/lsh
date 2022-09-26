@@ -14,10 +14,10 @@
 
 enum RETURN_CODES
 {
-  SUCCESS_EXIT_CODE = 0, /*Same in Linux */
-    EXECUTION_ERROR_EXIT_CODE = 3,
-    FORK_ERROR_EXIT_CODE = 4,
-    PIPE_CREATION_ERROR_EXIT_CODE = 5,
+    SUCCESS_EXIT_CODE = 0, /*Same in Linux */
+    EXECUTION_ERROR_EXIT_CODE = 255,
+    FORK_ERROR_EXIT_CODE = 254,
+    PIPE_CREATION_ERROR_EXIT_CODE = 253,
     UNKNOWN_COMMAND_EXIT_CODE = -1, /*Same in Linux */
     SIGTERM_EXIT_CODE = 9, /*Same in Linux */
     OEPN_FILE_ERROR_CODE = 1, /*Same in Linux */
@@ -168,7 +168,7 @@ int RunCommand(Command *cmd)
     {
       int newStatus;
       waitpid(-pgid, &newStatus, 0);
-      status = (newStatus == SUCCESS_EXIT_CODE) ? status : EXECUTION_ERROR_EXIT_CODE;
+      status = (status == SUCCESS_EXIT_CODE) ? newStatus : status;
     }
     tcsetpgrp(STDIN_FILENO, getpgid(0)); /*While running foreground commands, terminal controls the foreground group processes. After finishing the execution, terminal controls the main process again */
   }
