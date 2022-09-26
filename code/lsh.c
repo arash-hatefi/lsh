@@ -73,7 +73,7 @@ int ExecuteSingleCommandInProcess(char **, const int [3]);
 int HandleBuiltins(char **, const int [3]);
 int RunCdCommand(char **);
 void RunExitCommand();
-void EndAllProcess();
+void EndAllProcesses();
 void KillProcessInBackgroundPgidList();
 void SigchldHandler(int );
 void SigintHandler(int );
@@ -138,7 +138,7 @@ int main(int argc, char *argv[])
     free(line);
   }
 
-  EndAllProcess();
+  EndAllProcesses();
   return 0;
 }
 
@@ -344,12 +344,12 @@ int RunCdCommand(char** args)
 
 void RunExitCommand()
 {
-  EndAllProcess();
+  EndAllProcesses();
   exit(SUCCESS_EXIT_CODE);
 }
 
 
-void EndAllProcess()
+void EndAllProcesses()
 {
   KillProcessInBackgroundPgidList();
   ResetBackgroundPgidList();
